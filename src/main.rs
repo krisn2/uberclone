@@ -5,13 +5,21 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
-type Users = Arc<Mutex<HashMap<Uuid, Arc<Mutex<Session>>>>>;
-
-struct AppState {
-    users: Users,
+struct Location {
+    lat :f64,
+    long: f64,
 }
 
-async fn ws(
+type Users = Arc<Mutex<HashMap<Uuid, Arc<Mutex<Session>>>>>;
+type CurrentLocation = Arc<Mutex<HashMap<Uuid>, Arc<Mutex<Location>>>>;
+struct AppState {
+    users: Users,
+    locations : CurrentLocation,
+
+}
+
+
+async fn update_location_ws(
     req: HttpRequest,
     stream: web::Payload,
     data: web::Data<AppState>,
@@ -31,18 +39,18 @@ async fn ws(
     let stream = Box::pin(stream.aggregate_continuations().max_continuation_size(2_usize.pow(20)));
 
     let data_clone = data.clone();
-    rt::spawn(handle_trip(user_id, stream, data_clone));
+    rt::spawn(handle_update_location(user_id, stream, data_clone));
 
     Ok(res)
 }
 
-async fn handle_trip(
+async fn handle_update_location(
     user_id: Uuid,
     mut stream: impl StreamExt<Item = Result<AggregatedMessage, ProtocolError>> + Unpin,
     data: web::Data<AppState>,
 ) {
-    while let Some(msg) = stream.next().await {
-        match msg {
+    while let Some(location) = stream.next().await {
+        match location {
             Ok(AggregatedMessage::Text(text)) => {
                 if let Some((driver_id, message)) = parse_location(&text).await {
                     let clients = data.users.lock().unwrap();
@@ -65,8 +73,6 @@ async fn handle_trip(
         }
     }
 }
-
-
 async fn parse_location(input: &str) -> Option<(Uuid, String)> {
     let parts: Vec<&str> = input.split(", location:").collect();
 
@@ -81,6 +87,12 @@ async fn parse_location(input: &str) -> Option<(Uuid, String)> {
     None
 }
 
+async fn update_driver_location(location:Location, appstate:AppState, driver: Uuid){
+    let mut locations = appstate.locations.lock().unwrap();
+    locations.insert(driver,location);
+}
+
+
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -90,7 +102,8 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             .app_data(data.clone())
-            .route("/ws", web::get().to(ws))
+            .route("api/live-location", web::get().to(update_location_ws))
+            .route("api/trip", web::get().to())
     })
     .bind(("127.0.0.1", 8080))?
     .run()
